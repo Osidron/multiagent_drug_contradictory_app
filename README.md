@@ -10,7 +10,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-В macOS и Linux используйте `.venv/bin/python` вместо `.\.venv\Scripts\python.exe`. Откройте адрес, который выведет Streamlit, и введите `Aspirin`, `Fortamet` или `metformin`. При нескольких совпадениях выберите нужную инструкцию. Приложение загружает и разбирает документы для выбранного варианта. При единственном совпадении этот вариант выбирается автоматически.
+В macOS и Linux используйте `.venv/bin/python` вместо `.\.venv\Scripts\python.exe`. Откройте адрес, который выведет Streamlit, и введите `Aspirin`, `аспирин` или `метформин`. При нескольких совпадениях выберите нужную инструкцию. Приложение загружает и разбирает документы для выбранного варианта. При единственном совпадении этот вариант выбирается автоматически.
+
+Русские запросы переводит модель Mozilla Bergamot Tiny `ru→en` в WebAssembly на сервере приложения. При первом русском запросе приложение скачивает движок и веса Mozilla, сверяет SHA-256 и сохраняет файлы в `.bergamot/`. Для следующих переводов используются локальные файлы. Интерфейс показывает английский запрос, отправленный в DailyMed и Drugs@FDA. Для отдельных названий применяется написание из американских инструкций. Например, `парацетамол` ищется как `acetaminophen`. [Реестр моделей Mozilla](https://storage.googleapis.com/moz-fx-translations-data--303e-prod-translations-data/db/models.json), [движок Bergamot](https://github.com/mozilla/translate/tree/14fdf57e323e532c3e11c75618e676c96d93df00), [терминология FDA](https://www.fda.gov/drugs/safe-use-over-counter-pain-relievers-and-fever-reducers/acetaminophen)
 
 ## Архитектура
 

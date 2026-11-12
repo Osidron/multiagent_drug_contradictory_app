@@ -4,7 +4,8 @@ from unittest.mock import patch
 from streamlit.testing.v1 import AppTest
 
 from drug_search import coordinator, dailymed, fda
-from drug_search.models import Candidates, DailyCandidate, Document, FdaCandidate, Product, State
+from drug_search.models import Candidates, DailyCandidate, Document, FdaCandidate, Product, Search, State
+from drug_search.translation import TranslationError
 from drug_search.transport import SourceError
 
 
@@ -123,6 +124,36 @@ class MatchTests(unittest.TestCase):
 
 
 class AppTests(unittest.TestCase):
+    @patch("drug_search.translation.translate_query", return_value="Aspirin")
+    @patch.object(coordinator, "search", return_value=Search(
+        Candidates(State.NO_MATCH), Candidates(State.NO_MATCH)
+    ))
+    def test_translates_russian_query_before_search(self, search, translate):
+        app = AppTest.from_file("../streamlit_app.py").run()
+        app.text_input[0].set_value("аспирин")
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        translate.assert_called_once_with("аспирин")
+        search.assert_called_once_with("Aspirin")
+        self.assertTrue(any("Aspirin" in item.value for item in app.text))
+
+        app.text_input[0].set_value("Metformin")
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        translate.assert_called_once()
+        search.assert_called_with("Metformin")
+        self.assertFalse(app.text)
+
+    @patch("drug_search.translation.translate_query", side_effect=TranslationError)
+    @patch.object(coordinator, "search")
+    def test_translation_failure_is_visible_and_skips_search(self, search, _):
+        app = AppTest.from_file("../streamlit_app.py").run()
+        app.text_input[0].set_value("аспирин")
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("Не удалось перевести запрос" in item.value for item in app.error))
+        search.assert_not_called()
+
     @patch.object(fda, "document", return_value=PDF)
     @patch.object(fda, "search", return_value=Candidates(State.FOUND, (FDA,)))
     @patch.object(dailymed, "fetch", side_effect=SourceError("timeout"))

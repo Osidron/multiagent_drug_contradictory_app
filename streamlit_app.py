@@ -4,6 +4,7 @@ import streamlit as st
 
 from drug_search import coordinator
 from drug_search.models import Document, FdaCandidate, Product, State
+from drug_search.translation import RUSSIAN_LETTER, TranslationError, translate_query
 
 
 st.set_page_config(page_title="Противопоказания к лекарствам", page_icon="📄")
@@ -69,11 +70,12 @@ with st.form("search_form"):
     submit = right.form_submit_button("Найти", type="primary", use_container_width=True)
 
 st.markdown(
-    "Введите действующее вещество или торговое название на английском и нажмите «Найти». "
+    "Введите действующее вещество или торговое название на русском или английском и нажмите «Найти». "
     "Если есть несколько вариантов, выберите нужный препарат или форму.\n\n"
     "В результате появится раздел противопоказаний на английском. "
     "По ссылке можно открыть инструкцию и проверить формулировку.\n\n"
-    "Интерфейс работает на Streamlit. Два агента ищут документы в "
+    "Интерфейс работает на Streamlit. Mozilla Bergamot Tiny переводит русские запросы на английский. "
+    "Два агента ищут документы в "
     "[DailyMed](https://dailymed.nlm.nih.gov/dailymed/) и "
     "[Drugs@FDA](https://www.accessdata.fda.gov/scripts/cder/daf/), "
     "а координатор сопоставляет найденные записи."
@@ -82,15 +84,27 @@ st.markdown(
 if submit:
     st.session_state.pop("search", None)
     st.session_state.pop("result", None)
+    st.session_state.pop("translated_query", None)
     query = " ".join(query.split())
-    if not query or not any(char.isascii() and char.isalnum() for char in query):
-        st.warning("Введите название на английском.")
+    if not RUSSIAN_LETTER.search(query) and not any(char.isascii() and char.isalnum() for char in query):
+        st.warning("Введите название препарата на русском или английском.")
     else:
+        if RUSSIAN_LETTER.search(query):
+            with st.spinner("Переводим запрос…"):
+                try:
+                    query = translate_query(query)
+                except TranslationError:
+                    st.error("Не удалось перевести запрос. Попробуйте ещё раз или введите название на английском.")
+                    st.stop()
+            st.session_state.translated_query = query
         with st.spinner("Ищем инструкции…"):
             st.session_state.search = coordinator.search(query)
 
 if "search" not in st.session_state:
     st.stop()
+
+if "translated_query" in st.session_state:
+    st.text("Запрос для поиска · " + st.session_state.translated_query)
 
 search = st.session_state.search
 if search.daily.state != State.FOUND:
