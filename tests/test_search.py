@@ -10,6 +10,8 @@ from drug_search.transport import SourceError
 
 SET_ID = "12345678-1234-1234-1234-123456789abc"
 DAILY = DailyCandidate(SET_ID, "EXAMPLE (EXAMINE) TABLET", "Sep 1, 2026", "7")
+DAILY_WITHOUT_SECTION = DailyCandidate("22345678-1234-1234-1234-123456789abc", "EXAMPLE CAPSULE", "", "1")
+DAILY_SECOND_FORM = DailyCandidate("32345678-1234-1234-1234-123456789abc", "EXAMPLE SOLUTION", "", "1")
 PRODUCT = Product("Example", ("Examine",), "TABLET, EXTENDED RELEASE", ("ORAL",), ("10 mg",), ("NDA123456",))
 FDA = FdaCandidate("NDA123456", PRODUCT, "https://www.accessdata.fda.gov/example.pdf")
 PDF = Document("Drugs@FDA", FDA.label_url, State.FOUND, "A supported restriction.")
@@ -57,6 +59,15 @@ class ExtractTests(unittest.TestCase):
             _, failed = dailymed.document(DAILY)
         self.assertEqual((missing.state, failed.state), (State.NO_SECTION, State.UNAVAILABLE))
 
+    def test_extracts_otc_do_not_use_as_its_own_section(self):
+        xml = SPL.replace("34070-3", "50570-1").replace("<name>Example</name>",
+                                                         "<name>Example<suffix>Low Dose</suffix></name>")
+        products, label = dailymed.parse_label(xml.encode(), DAILY)
+        self.assertEqual(products[0].name, "Example Low Dose")
+        self.assertTrue(label.has_text)
+        self.assertEqual(label.section, "Do not use")
+        self.assertNotIn("Separate warning", label.text)
+
     def test_wrong_spl_identifier_is_rejected(self):
         with self.assertRaises(ValueError):
             dailymed.parse_label(SPL.replace(SET_ID, "different").encode(), DAILY)
@@ -98,6 +109,20 @@ class MatchTests(unittest.TestCase):
         self.assertEqual(coordinator.match((without_id,), Candidates(State.FOUND, (FDA, other))),
                          (State.AMBIGUOUS, None))
 
+    @patch.object(dailymed, "search", return_value=Candidates(State.NO_MATCH))
+    @patch.object(fda, "document")
+    @patch.object(fda, "search")
+    def test_screens_fda_candidates_and_reuses_the_document(self, search, document, _):
+        shared = FdaCandidate(FDA.application, Product("Second", ("Examine",)), FDA.label_url)
+        empty = FdaCandidate("NDA999999", PRODUCT, "https://www.accessdata.fda.gov/empty.pdf")
+        search.return_value = Candidates(State.FOUND, (FDA, shared, empty))
+        document.side_effect = lambda item: (PDF if item.label_url == FDA.label_url else
+                                             Document("Drugs@FDA", item.label_url, State.NO_SECTION))
+        results = coordinator.search("Example")
+        self.assertEqual(results.fda.items, (FDA, shared))
+        self.assertEqual(coordinator.for_fda(shared, results).fda, PDF)
+        self.assertEqual(document.call_count, 2)
+
 
 class AppTests(unittest.TestCase):
     @patch.object(fda, "document", return_value=PDF)
@@ -109,25 +134,31 @@ class AppTests(unittest.TestCase):
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertTrue(any("DailyMed" in item.value and "недоступен" in item.value for item in app.info))
-        self.assertTrue(any(item.value == PDF.text for item in app.text))
+        self.assertTrue(any(PDF.text in item.value for item in app.get("html")))
 
     @patch.object(fda, "search", return_value=Candidates(State.NO_MATCH))
     @patch.object(dailymed, "search", return_value=Candidates(State.FOUND, (
-        DAILY, DailyCandidate("22345678-1234-1234-1234-123456789abc", "EXAMPLE CAPSULE", "", "1")
+        DAILY, DAILY_WITHOUT_SECTION, DAILY_SECOND_FORM
     )))
-    @patch.object(dailymed, "document", return_value=(
-        (PRODUCT,), Document("DailyMed", "https://dailymed.nlm.nih.gov/example", State.FOUND, "Only this form.")
-    ))
-    def test_waits_for_selection_when_there_are_multiple_forms(self, document, *_):
+    @patch.object(dailymed, "document")
+    def test_selection_hides_forms_without_text_and_reuses_loaded_document(self, document, *_):
+        document.side_effect = lambda item: ((PRODUCT,), Document(
+            "DailyMed", "https://dailymed.nlm.nih.gov/example",
+            State.NO_SECTION if item == DAILY_WITHOUT_SECTION else State.FOUND,
+            "" if item == DAILY_WITHOUT_SECTION else "Only this form. Values < 30."
+        ))
         app = AppTest.from_file("../streamlit_app.py").run()
+        self.assertEqual(app.text_input[0].proto.placeholder, "Aspirin")
         app.text_input[0].set_value("Example")
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.selectbox[0].options), 2)
-        document.assert_not_called()
-        app.selectbox[0].set_value(DAILY).run()
+        self.assertTrue(all("CAPSULE" not in option for option in app.selectbox[0].options))
+        self.assertFalse(app.get("html"))
+        app.selectbox[0].select_index(0).run()
         self.assertFalse(app.exception)
-        self.assertTrue(any(item.value == "Only this form." for item in app.text))
+        self.assertTrue(any("Only this form. Values &lt; 30." in item.value for item in app.get("html")))
+        self.assertEqual(document.call_count, 3)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,11 @@ class Document:
     text: str = ""
     date: str = ""
     version: str = ""
+    section: str = "Contraindications"
+
+    @property
+    def has_text(self) -> bool:
+        return self.state == State.FOUND and bool(self.text.strip())
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,13 @@ class DailyCandidate:
     title: str
     date: str
     version: str
+
+
+@dataclass(frozen=True)
+class DailyOption:
+    candidate: DailyCandidate
+    products: tuple[Product, ...]
+    document: Document
 
 
 @dataclass(frozen=True)
@@ -66,8 +78,10 @@ class FdaCandidate:
 
 @dataclass(frozen=True)
 class Search:
-    daily: Candidates[DailyCandidate]
+    daily: Candidates[DailyOption]
     fda: Candidates[FdaCandidate]
+    fda_records: Candidates[FdaCandidate]
+    fda_documents: dict[str, Document]
 
 
 @dataclass(frozen=True)

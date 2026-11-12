@@ -15,6 +15,7 @@ API = f"{BASE}/services/v2"
 PAGE_SIZE = 40
 NS = {"spl": "urn:hl7-org:v3"}
 CONTRAINDICATIONS = "34070-3"
+OTC_DO_NOT_USE = "50570-1"
 
 
 def search(query: str) -> Candidates[DailyCandidate]:
@@ -76,7 +77,7 @@ def products_from(root: Element) -> tuple[Product, ...]:
                     "spl:asEntityWithGeneric/spl:genericMedicine/spl:name", "", NS
                 ))])
             products.append(Product(
-                clean("".join(name.itertext())), ingredients,
+                clean(" ".join(name.itertext())), ingredients,
                 attr(node, "spl:formCode", "displayName"),
                 ordered(code.get("displayName", "") for code in outer.findall(
                     "spl:consumedIn/spl:substanceAdministration/spl:routeCode", NS
@@ -126,15 +127,18 @@ def parse_label(content: bytes, candidate: DailyCandidate) -> tuple[tuple[Produc
         url += f"&version={version}"
     effective = attr(root, "spl:effectiveTime", "value")
     date = f"{effective[:4]}-{effective[4:6]}-{effective[6:]}" if len(effective) == 8 else candidate.date
-    sections = []
+    sections: dict[str, list[str]] = {CONTRAINDICATIONS: [], OTC_DO_NOT_USE: []}
     for section in root.findall(".//spl:section", NS):
-        if attr(section, "spl:code", "code") == CONTRAINDICATIONS:
+        code = attr(section, "spl:code", "code")
+        if code in sections:
             for body in section.findall("spl:text", NS):
                 if text := narrative(body):
-                    sections.append(text)
-    text = "\n\n".join(dict.fromkeys(sections))
+                    sections[code].append(text)
+    code = CONTRAINDICATIONS if sections[CONTRAINDICATIONS] else OTC_DO_NOT_USE
+    text = "\n\n".join(dict.fromkeys(sections[code]))
+    title = "Do not use" if text and code == OTC_DO_NOT_USE else "Contraindications"
     return products_from(root), Document(
-        "DailyMed", url, State.FOUND if text else State.NO_SECTION, text, date, version
+        "DailyMed", url, State.FOUND if text else State.NO_SECTION, text, date, version, title
     )
 
 
