@@ -1,0 +1,134 @@
+import unittest
+from unittest.mock import patch
+
+from streamlit.testing.v1 import AppTest
+
+from drug_search import coordinator, dailymed, fda
+from drug_search.models import Candidates, DailyCandidate, Document, FdaCandidate, Product, State
+from drug_search.transport import SourceError
+
+
+SET_ID = "12345678-1234-1234-1234-123456789abc"
+DAILY = DailyCandidate(SET_ID, "EXAMPLE (EXAMINE) TABLET", "Sep 1, 2026", "7")
+PRODUCT = Product("Example", ("Examine",), "TABLET, EXTENDED RELEASE", ("ORAL",), ("10 mg",), ("NDA123456",))
+FDA = FdaCandidate("NDA123456", PRODUCT, "https://www.accessdata.fda.gov/example.pdf")
+PDF = Document("Drugs@FDA", FDA.label_url, State.FOUND, "A supported restriction.")
+SPL = f"""
+<document xmlns="urn:hl7-org:v3">
+  <setId root="{SET_ID}" /><versionNumber value="7" /><effectiveTime value="20260901" />
+  <component><structuredBody>
+    <component><section>
+      <code code="48780-1" />
+      <subject><manufacturedProduct>
+        <manufacturedProduct>
+          <name>Example</name><formCode displayName="TABLET, EXTENDED RELEASE" />
+          <ingredient classCode="ACTIM">
+            <quantity><numerator value="10" unit="mg" /><denominator value="1" unit="1" /></quantity>
+            <ingredientSubstance><name>Examine</name></ingredientSubstance>
+          </ingredient>
+          <ingredient classCode="IACT"><ingredientSubstance><name>Excipient</name></ingredientSubstance></ingredient>
+          <subjectOf><approval><id root="2.16.840.1.113883.3.150" extension="NDA123456" /></approval></subjectOf>
+        </manufacturedProduct>
+        <consumedIn><substanceAdministration><routeCode displayName="ORAL" /></substanceAdministration></consumedIn>
+      </manufacturedProduct></subject>
+    </section></component>
+    <component><section>
+      <code code="34070-3" />
+      <text><paragraph>Values &lt; 30.</paragraph><list><item>Allergy to <content>Examine</content>.</item></list></text>
+    </section></component>
+    <component><section><code code="43685-7" /><text>Separate warning.</text></section></component>
+  </structuredBody></component>
+</document>
+"""
+
+
+class ExtractTests(unittest.TestCase):
+    def test_extracts_only_contraindications_from_spl_and_binds_version(self):
+        products, label = dailymed.parse_label(SPL.encode(), DAILY)
+        self.assertEqual(products, (PRODUCT,))
+        self.assertEqual(label.state, State.FOUND)
+        self.assertEqual(label.text, "Values < 30.\nAllergy to Examine.")
+        self.assertEqual(label.date, "2026-09-01")
+        self.assertTrue(label.url.endswith("&version=7"))
+
+    def test_missing_spl_section_differs_from_network_failure(self):
+        _, missing = dailymed.parse_label(SPL.replace("34070-3", "99999-9").encode(), DAILY)
+        with patch.object(dailymed, "fetch", side_effect=SourceError("503")):
+            _, failed = dailymed.document(DAILY)
+        self.assertEqual((missing.state, failed.state), (State.NO_SECTION, State.UNAVAILABLE))
+
+    def test_wrong_spl_identifier_is_rejected(self):
+        with self.assertRaises(ValueError):
+            dailymed.parse_label(SPL.replace(SET_ID, "different").encode(), DAILY)
+
+    def test_pdf_selects_full_section_over_table_of_contents(self):
+        pdf = ("CONTENTS\n4 CONTRAINDICATIONS\n5 WARNINGS AND PRECAUTIONS\n"
+               "FULL PRESCRIBING INFORMATION\n4 CONTRAINDICATIONS\nValues < 30.\n"
+               "5 WARNINGS AND PRECAUTIONS\nSeparate warning.")
+        self.assertEqual(fda.pdf_section(pdf), "Values < 30.")
+
+    def test_pdf_with_only_table_of_contents_is_not_evidence(self):
+        self.assertEqual(fda.pdf_section("4 CONTRAINDICATIONS\n5 WARNINGS AND PRECAUTIONS"), "")
+
+    def test_chooses_newest_approved_label_and_upgrades_legacy_url(self):
+        def submission(status, date, name):
+            return {"submission_status": status, "submission_status_date": date,
+                    "application_docs": [{"type": "Label", "url": f"http://www.accessdata.fda.gov/{name}.pdf"}]}
+        entries = [submission("AP", "20260101", "new"), submission("AP", "20250101", "old"),
+                   submission("RE", "20260901", "not-approved")]
+        self.assertEqual(fda.approved_label(entries)[:2],
+                         ("https://www.accessdata.fda.gov/new.pdf", "2026-01-01"))
+        self.assertEqual(fda.label_url("https://www.accessdata.fda.gov.evil.example/example.pdf"), "")
+
+
+class MatchTests(unittest.TestCase):
+    def test_matches_composition_form_route_and_application(self):
+        status, selected = coordinator.match((PRODUCT,), Candidates(State.FOUND, (FDA,)))
+        self.assertEqual((status, selected), (State.FOUND, FDA))
+
+    def test_same_application_and_name_do_not_override_wrong_form(self):
+        different = Product(PRODUCT.name, PRODUCT.ingredients, "TABLET", PRODUCT.routes)
+        wrong = FdaCandidate(FDA.application, different)
+        self.assertEqual(coordinator.match((PRODUCT,), Candidates(State.FOUND, (wrong,))),
+                         (State.NO_MATCH, None))
+
+    def test_similar_products_across_applications_remain_ambiguous(self):
+        without_id = Product(PRODUCT.name, PRODUCT.ingredients, PRODUCT.form, PRODUCT.routes)
+        other = FdaCandidate("NDA987654", without_id)
+        self.assertEqual(coordinator.match((without_id,), Candidates(State.FOUND, (FDA, other))),
+                         (State.AMBIGUOUS, None))
+
+
+class AppTests(unittest.TestCase):
+    @patch.object(fda, "document", return_value=PDF)
+    @patch.object(fda, "search", return_value=Candidates(State.FOUND, (FDA,)))
+    @patch.object(dailymed, "fetch", side_effect=SourceError("timeout"))
+    def test_shows_fda_document_when_dailymed_fails(self, *_):
+        app = AppTest.from_file("../streamlit_app.py").run()
+        app.text_input[0].set_value("Example")
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("DailyMed" in item.value and "недоступен" in item.value for item in app.info))
+        self.assertTrue(any(item.value == PDF.text for item in app.text))
+
+    @patch.object(fda, "search", return_value=Candidates(State.NO_MATCH))
+    @patch.object(dailymed, "search", return_value=Candidates(State.FOUND, (
+        DAILY, DailyCandidate("22345678-1234-1234-1234-123456789abc", "EXAMPLE CAPSULE", "", "1")
+    )))
+    @patch.object(dailymed, "document", return_value=(
+        (PRODUCT,), Document("DailyMed", "https://dailymed.nlm.nih.gov/example", State.FOUND, "Only this form.")
+    ))
+    def test_waits_for_selection_when_there_are_multiple_forms(self, document, *_):
+        app = AppTest.from_file("../streamlit_app.py").run()
+        app.text_input[0].set_value("Example")
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(len(app.selectbox[0].options), 2)
+        document.assert_not_called()
+        app.selectbox[0].set_value(DAILY).run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any(item.value == "Only this form." for item in app.text))
+
+
+if __name__ == "__main__":
+    unittest.main()
