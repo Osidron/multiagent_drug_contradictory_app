@@ -11,7 +11,6 @@ from drug_search.transport import SourceError
 SET_ID = "12345678-1234-1234-1234-123456789abc"
 DAILY = DailyCandidate(SET_ID, "EXAMPLE (EXAMINE) TABLET", "Sep 1, 2026", "7")
 DAILY_WITHOUT_SECTION = DailyCandidate("22345678-1234-1234-1234-123456789abc", "EXAMPLE CAPSULE", "", "1")
-DAILY_SECOND_FORM = DailyCandidate("32345678-1234-1234-1234-123456789abc", "EXAMPLE SOLUTION", "", "1")
 PRODUCT = Product("Example", ("Examine",), "TABLET, EXTENDED RELEASE", ("ORAL",), ("10 mg",), ("NDA123456",))
 FDA = FdaCandidate("NDA123456", PRODUCT, "https://www.accessdata.fda.gov/example.pdf")
 PDF = Document("Drugs@FDA", FDA.label_url, State.FOUND, "A supported restriction.")
@@ -112,16 +111,15 @@ class MatchTests(unittest.TestCase):
     @patch.object(dailymed, "search", return_value=Candidates(State.NO_MATCH))
     @patch.object(fda, "document")
     @patch.object(fda, "search")
-    def test_screens_fda_candidates_and_reuses_the_document(self, search, document, _):
-        shared = FdaCandidate(FDA.application, Product("Second", ("Examine",)), FDA.label_url)
+    def test_defers_fda_download_until_a_candidate_is_chosen(self, search, document, _):
         empty = FdaCandidate("NDA999999", PRODUCT, "https://www.accessdata.fda.gov/empty.pdf")
-        search.return_value = Candidates(State.FOUND, (FDA, shared, empty))
-        document.side_effect = lambda item: (PDF if item.label_url == FDA.label_url else
-                                             Document("Drugs@FDA", item.label_url, State.NO_SECTION))
+        search.return_value = Candidates(State.FOUND, (FDA, empty))
+        document.return_value = PDF
         results = coordinator.search("Example")
-        self.assertEqual(results.fda.items, (FDA, shared))
-        self.assertEqual(coordinator.for_fda(shared, results).fda, PDF)
-        self.assertEqual(document.call_count, 2)
+        self.assertEqual(results.fda.items, (FDA, empty))
+        document.assert_not_called()
+        self.assertEqual(coordinator.for_fda(FDA).fda, PDF)
+        document.assert_called_once_with(FDA)
 
 
 class AppTests(unittest.TestCase):
@@ -138,10 +136,10 @@ class AppTests(unittest.TestCase):
 
     @patch.object(fda, "search", return_value=Candidates(State.NO_MATCH))
     @patch.object(dailymed, "search", return_value=Candidates(State.FOUND, (
-        DAILY, DAILY_WITHOUT_SECTION, DAILY_SECOND_FORM
+        DAILY, DAILY_WITHOUT_SECTION
     )))
     @patch.object(dailymed, "document")
-    def test_selection_hides_forms_without_text_and_reuses_loaded_document(self, document, *_):
+    def test_defers_daily_download_and_shows_missing_section_on_selection(self, document, *_):
         document.side_effect = lambda item: ((PRODUCT,), Document(
             "DailyMed", "https://dailymed.nlm.nih.gov/example",
             State.NO_SECTION if item == DAILY_WITHOUT_SECTION else State.FOUND,
@@ -153,12 +151,17 @@ class AppTests(unittest.TestCase):
         app.button[0].click().run()
         self.assertFalse(app.exception)
         self.assertEqual(len(app.selectbox[0].options), 2)
-        self.assertTrue(all("CAPSULE" not in option for option in app.selectbox[0].options))
+        self.assertTrue(any("CAPSULE" in option for option in app.selectbox[0].options))
         self.assertFalse(app.get("html"))
+        document.assert_not_called()
         app.selectbox[0].select_index(0).run()
         self.assertFalse(app.exception)
         self.assertTrue(any("Only this form. Values &lt; 30." in item.value for item in app.get("html")))
-        self.assertEqual(document.call_count, 3)
+        document.assert_called_once_with(DAILY)
+        app.selectbox[0].select_index(1).run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any("раздел противопоказаний не найден" in item.value for item in app.info))
+        self.assertEqual(document.call_count, 2)
 
 
 if __name__ == "__main__":

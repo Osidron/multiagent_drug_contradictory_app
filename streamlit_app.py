@@ -11,7 +11,7 @@ st.set_page_config(page_title="Противопоказания к лекарс�
 MESSAGES = {
     State.NO_MATCH: "Совпадений не найдено.",
     State.NO_DOCUMENT: "Ссылка на утверждённую инструкцию отсутствует в данных Drugs@FDA.",
-    State.NO_SECTION: "В проверенных инструкциях нет текста противопоказаний.",
+    State.NO_SECTION: "В выбранной инструкции раздел противопоказаний не найден.",
     State.UNREADABLE: "Не удалось прочитать документ.",
     State.UNAVAILABLE: "Источник или документ временно недоступен.",
     State.AMBIGUOUS: "Найдено несколько возможных записей. Однозначное сопоставление не выполнено.",
@@ -86,7 +86,7 @@ if submit:
     if not query or not any(char.isascii() and char.isalnum() for char in query):
         st.warning("Введите название на английском.")
     else:
-        with st.spinner("Ищем инструкции и проверяем противопоказания…"):
+        with st.spinner("Ищем инструкции…"):
             st.session_state.search = coordinator.search(query)
 
 if "search" not in st.session_state:
@@ -117,22 +117,22 @@ items = dict(tabs)[source]
 if len(items) == 1:
     selected = items[0]
 else:
-    formatter = (lambda item: f"{item.candidate.title} · {item.candidate.date}") if source == "DailyMed" else fda_option
+    formatter = (lambda item: f"{item.title} · {item.date}") if source == "DailyMed" else fda_option
     selected = st.selectbox("Выберите препарат или форму", items, index=None, format_func=formatter)
 if selected is None:
     st.stop()
 
 if st.session_state.get("result_key") != selected or "result" not in st.session_state:
     with st.spinner("Читаем инструкцию…"):
-        st.session_state.result = (coordinator.for_daily(selected, search) if source == "DailyMed"
-                                   else coordinator.for_fda(selected, search))
+        st.session_state.result = (coordinator.for_daily(selected, search.fda) if source == "DailyMed"
+                                   else coordinator.for_fda(selected))
         st.session_state.result_key = selected
 
 result = st.session_state.result
 st.subheader("Противопоказания")
 show_products(result.products)
 if not result.products and source == "DailyMed":
-    st.text(selected.candidate.title)
+    st.text(selected.title)
 if result.fda_candidate and result.fda_candidate.marketing_status:
     st.caption(f"Статус продукта по Drugs@FDA: {result.fda_candidate.marketing_status}")
 

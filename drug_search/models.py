@@ -53,13 +53,6 @@ class DailyCandidate:
 
 
 @dataclass(frozen=True)
-class DailyOption:
-    candidate: DailyCandidate
-    products: tuple[Product, ...]
-    document: Document
-
-
-@dataclass(frozen=True)
 class FdaCandidate:
     application: str
     product: Product
@@ -78,10 +71,8 @@ class FdaCandidate:
 
 @dataclass(frozen=True)
 class Search:
-    daily: Candidates[DailyOption]
+    daily: Candidates[DailyCandidate]
     fda: Candidates[FdaCandidate]
-    fda_records: Candidates[FdaCandidate]
-    fda_documents: dict[str, Document]
 
 
 @dataclass(frozen=True)

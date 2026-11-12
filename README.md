@@ -10,7 +10,7 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
-В macOS и Linux используйте `.venv/bin/python` вместо `.\.venv\Scripts\python.exe`. Откройте адрес, который выведет Streamlit, и введите `Aspirin`, `Fortamet` или `metformin`. При нескольких совпадениях выберите нужную инструкцию из вариантов, для которых удалось извлечь текст противопоказаний.
+В macOS и Linux используйте `.venv/bin/python` вместо `.\.venv\Scripts\python.exe`. Откройте адрес, который выведет Streamlit, и введите `Aspirin`, `Fortamet` или `metformin`. При нескольких совпадениях выберите нужную инструкцию. Приложение загружает и разбирает документы для выбранного варианта. При единственном совпадении этот вариант выбирается автоматически.
 
 ## Архитектура
 
